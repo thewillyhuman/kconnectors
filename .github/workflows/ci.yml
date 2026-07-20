@@ -1,0 +1,115 @@
+# Change-aware CI: only the connectors affected by a push / pull request are
+# linted, tested and built. tools/ci/affected-connectors.sh decides what
+# "affected" means; a change to shared files (Bazel module, lockfile, tools/,
+# workflows) rebuilds everything.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: detect affected connectors
+    runs-on: ubuntu-latest
+    outputs:
+      connectors: ${{ steps.detect.outputs.connectors }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the merge base with the target branch is available.
+          fetch-depth: 0
+      - id: detect
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          connectors="$(tools/ci/affected-connectors.sh "$base" "${{ github.sha }}")"
+          echo "Affected connectors: $connectors"
+          echo "connectors=$connectors" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: lint ${{ matrix.connector }}
+    needs: changes
+    if: needs.changes.outputs.connectors != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        connector: ${{ fromJSON(needs.changes.outputs.connectors) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache PMD distribution
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kconnectors-pmd
+          key: pmd-${{ hashFiles('tools/lint/pmd.sh') }}
+      - run: tools/lint/pmd.sh "${{ matrix.connector }}"
+
+  test:
+    name: test ${{ matrix.connector }}
+    needs: changes
+    if: needs.changes.outputs.connectors != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        connector: ${{ fromJSON(needs.changes.outputs.connectors) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel-disk-cache
+            ~/.cache/bazel-repo-cache
+            ~/.cache/bazelisk
+          key: bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'maven_install.json') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-
+      - name: Test
+        run: bazelisk test --config=ci "//connectors/${{ matrix.connector }}/..."
+      - name: Build plugin zip
+        run: bazelisk build --config=ci "//connectors/${{ matrix.connector }}:plugin"
+      - name: Upload plugin zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.connector }}-plugin
+          path: bazel-bin/connectors/${{ matrix.connector }}/*-plugin.zip
+          if-no-files-found: error
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.connector }}-testlogs
+          path: bazel-testlogs/connectors/${{ matrix.connector }}/
+
+  # Aggregate result for branch protection: a single required check that is
+  # green when every matrix job (of a possibly empty matrix) succeeded.
+  ci-ok:
+    name: ci ok
+    needs: [changes, lint, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "change detection failed"
+            exit 1
+          fi
+          results="${{ needs.lint.result }} ${{ needs.test.result }}"
+          echo "lint/test results: $results"
+          for r in $results; do
+            [[ "$r" == "success" || "$r" == "skipped" ]] || exit 1
+          done

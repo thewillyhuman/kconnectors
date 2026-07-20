@@ -1,0 +1,84 @@
+# Per-connector releases, driven by tags of the form
+#
+#   <connector-name>-v<MAJOR>.<MINOR>.<PATCH>     e.g. kafka-connector-source-amq-v1.0.0
+#
+# The tagged version must match VERSION in the connector's version.bzl (bump it
+# first, merge, then tag). Only the tagged connector is tested, built and
+# published: the Maven artifact goes to this repository's GitHub Packages
+# registry and the Kafka Connect plugin zip is attached to a GitHub release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "kafka-connector-*-v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  packages: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse and validate tag
+        id: parse
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          connector="${tag%-v*}"
+          version="${tag##*-v}"
+          if [[ ! -d "connectors/$connector" ]]; then
+            echo "::error::Tag $tag does not match any directory under connectors/"
+            exit 1
+          fi
+          declared="$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' "connectors/$connector/version.bzl")"
+          if [[ "$declared" != "$version" ]]; then
+            echo "::error::Tag says $version but connectors/$connector/version.bzl says $declared"
+            exit 1
+          fi
+          echo "connector=$connector" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel-disk-cache
+            ~/.cache/bazel-repo-cache
+            ~/.cache/bazelisk
+          key: bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'maven_install.json') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-
+
+      - name: Test
+        run: bazelisk test --config=ci "//connectors/${{ steps.parse.outputs.connector }}/..."
+
+      - name: Build plugin zip
+        run: bazelisk build --config=ci "//connectors/${{ steps.parse.outputs.connector }}:plugin"
+
+      - name: Publish Maven artifact to GitHub Packages
+        env:
+          MAVEN_REPO: https://maven.pkg.github.com/${{ github.repository }}
+          MAVEN_USER: ${{ github.actor }}
+          MAVEN_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          bazelisk run --config=ci
+          "//connectors/${{ steps.parse.outputs.connector }}:${{ steps.parse.outputs.connector }}.publish"
+
+      - name: Create GitHub release with plugin zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          connector="${{ steps.parse.outputs.connector }}"
+          version="${{ steps.parse.outputs.version }}"
+          zip="bazel-bin/connectors/$connector/$connector-$version-plugin.zip"
+          notes="Maven artifact \`io.github.thewillyhuman:$connector:$version\` in this repository's GitHub Packages Maven registry. The attached plugin zip unpacks into the Kafka Connect \`plugin.path\`."
+          gh release create "$GITHUB_REF_NAME" "$zip" \
+            --title "$connector $version" \
+            --notes "$notes"
