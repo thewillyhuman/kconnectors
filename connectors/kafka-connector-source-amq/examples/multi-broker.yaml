@@ -1,0 +1,56 @@
+# Example Strimzi KafkaConnector consuming one queue from six brokers with a
+# single connector, migrated from CamelJmsamqp10sourceSourceConnector.
+#
+# Only the connector class and the connection/queue settings change when
+# migrating; the transformation chain, converters and error handling are Kafka
+# Connect framework features and stay as they are.
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaConnector
+metadata:
+  name: amq-sample-events
+  labels:
+    strimzi.io/cluster: my-connect
+spec:
+  class: io.github.thewillyhuman.kafka.connect.source.amq.AmqSourceConnector
+  # One task per broker: this single connector replaces six per-broker connectors.
+  tasksMax: 6
+  state: running
+  autoRestart:
+    enabled: true
+  config:
+    # --- brokers (was one connector per camel.kamelet.jms-amqp-10-source.remoteURI) ---
+    # All listed brokers are consumed concurrently, distributed across the tasks. Each entry
+    # could also be a failover:(...) URI for an HA pair.
+    amq.url: >-
+      amqp://broker-1.example.com:61112?jms.prefetchPolicy.all=100,
+      amqp://broker-2.example.com:61112?jms.prefetchPolicy.all=100,
+      amqp://broker-3.example.com:61112?jms.prefetchPolicy.all=100,
+      amqp://broker-4.example.com:61112?jms.prefetchPolicy.all=100,
+      amqp://broker-5.example.com:61112?jms.prefetchPolicy.all=100,
+      amqp://broker-6.example.com:61112?jms.prefetchPolicy.all=100
+    amq.username: amq-consumer
+    amq.password: ${file:/opt/kafka/external-configuration/amq-credentials.properties:password}
+
+    # --- destination (was camel.kamelet.jms-amqp-10-source.destination*) ---
+    amq.destination.type: queue
+    amq.destination.name: Consumer.sample.events
+
+    # --- kafka (was topics:) ---
+    kafka.topic: sample-events
+
+    # --- delivery (was camel.source.maxNotCommittedRecords) ---
+    max.unacked.messages: 2048
+
+    # --- unchanged framework configuration ---
+    value.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter.schemas.enable: false
+    errors.tolerance: all
+    transforms: insertSource, timestampConverter
+    transforms.insertSource.type: org.apache.kafka.connect.transforms.InsertField$Value
+    transforms.insertSource.static.field: source
+    transforms.insertSource.static.value: "amq"
+    transforms.timestampConverter.type: org.apache.kafka.connect.transforms.TimestampConverter$Value
+    transforms.timestampConverter.field: timestamp
+    transforms.timestampConverter.format: "yyyy-MM-dd'T'HH:mm:ssX"
+    transforms.timestampConverter.unix.precision: milliseconds
+    transforms.timestampConverter.target.type: unix

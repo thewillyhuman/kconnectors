@@ -1,0 +1,111 @@
+"""kafka-connector-source-amq: ActiveMQ (AMQP 1.0) -> Kafka source connector."""
+
+load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
+load("@contrib_rules_jvm//java:defs.bzl", "java_test_suite")
+load("@rules_java//java:defs.bzl", "java_binary")
+load("@rules_jvm_external//:defs.bzl", "java_export")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files")
+load("@rules_pkg//pkg:zip.bzl", "pkg_zip")
+load(":version.bzl", "VERSION")
+
+CONNECTOR = "kafka-connector-source-amq"
+
+# Maven "provided" scope equivalent: needed to compile, supplied by the Kafka
+# Connect runtime at run time, and excluded from the plugin zip.
+PROVIDED_DEPS = [
+    "@maven//:org_apache_kafka_connect_api",
+    "@maven//:org_apache_kafka_kafka_clients",
+    "@maven//:org_slf4j_slf4j_api",
+]
+
+# Replaces Maven resource filtering: stamps the connector version (from
+# version.bzl) into the properties resource read by Version.java.
+expand_template(
+    name = "version_properties",
+    out = "src/main/resources/%s.properties" % CONNECTOR,
+    substitutions = {"{VERSION}": VERSION},
+    template = "src/main/resources/%s.properties.tmpl" % CONNECTOR,
+)
+
+# The connector library, exported as a Maven artifact. Publish with:
+#   bazel run //connectors/kafka-connector-source-amq:kafka-connector-source-amq.publish
+java_export(
+    name = CONNECTOR,
+    srcs = glob(["src/main/java/**/*.java"]),
+    maven_coordinates = "io.github.thewillyhuman:%s:%s" % (CONNECTOR, VERSION),
+    resource_strip_prefix = "connectors/%s/src/main/resources" % CONNECTOR,
+    resources = glob(
+        ["src/main/resources/**"],
+        exclude = ["**/*.tmpl"],
+    ) + [":version_properties"],
+    visibility = ["//visibility:public"],
+    deps = PROVIDED_DEPS + [
+        "@maven//:jakarta_jms_jakarta_jms_api",
+        "@maven//:org_apache_qpid_qpid_jms_client",
+    ],
+)
+
+java_test_suite(
+    name = "tests",
+    size = "medium",
+    srcs = glob(["src/test/java/**/*.java"]),
+    resources = glob(["src/test/resources/**"]),
+    runner = "junit5",
+    test_suffixes = ["Test.java"],
+    runtime_deps = [
+        "@maven//:org_junit_jupiter_junit_jupiter_engine",
+        "@maven//:org_junit_platform_junit_platform_launcher",
+        "@maven//:org_junit_platform_junit_platform_reporting",
+        "@maven//:org_slf4j_slf4j_simple",
+    ],
+    deps = [
+        ":%s" % CONNECTOR,
+        "@maven//:jakarta_jms_jakarta_jms_api",
+        "@maven//:org_apache_activemq_artemis_amqp_protocol",
+        "@maven//:org_apache_activemq_artemis_commons",
+        "@maven//:org_apache_activemq_artemis_server",
+        "@maven//:org_apache_kafka_connect_api",
+        "@maven//:org_apache_kafka_kafka_clients",
+        "@maven//:org_apache_qpid_qpid_jms_client",
+        "@maven//:org_junit_jupiter_junit_jupiter_api",
+        "@maven//:org_junit_jupiter_junit_jupiter_params",
+        "@maven//:org_slf4j_slf4j_api",
+    ],
+)
+
+# --- Kafka Connect plugin zip ------------------------------------------------
+# A single self-contained jar (connector + runtime dependencies, minus what the
+# Connect runtime already provides) wrapped in the conventional
+# <name>-<version>/ directory layout for plugin.path.
+
+java_binary(
+    name = "provided_env",
+    main_class = "provided.deps.only.NotAnEntryPoint",
+    runtime_deps = PROVIDED_DEPS,
+)
+
+java_binary(
+    name = "plugin_jar",
+    main_class = "connector.plugins.have.NoEntryPoint",
+    deploy_env = [":provided_env"],
+    runtime_deps = [":%s" % CONNECTOR],
+)
+
+pkg_files(
+    name = "plugin_contents",
+    srcs = [
+        "LICENSE",
+        "README.md",
+        ":plugin_jar_deploy.jar",
+    ],
+    prefix = "%s-%s" % (CONNECTOR, VERSION),
+    renames = {
+        "plugin_jar_deploy.jar": "%s-%s.jar" % (CONNECTOR, VERSION),
+    },
+)
+
+pkg_zip(
+    name = "plugin",
+    srcs = [":plugin_contents"],
+    package_file_name = "%s-%s-plugin.zip" % (CONNECTOR, VERSION),
+)
