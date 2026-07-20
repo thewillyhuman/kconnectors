@@ -128,6 +128,15 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
     private static final String CONNECTION_RETRY_BACKOFF_MAX_MS_DOC =
             "Maximum delay between reconnection attempts to the broker.";
 
+    public static final String CONNECTION_MAX_DOWNTIME_MS_CONFIG = "connection.max.downtime.ms";
+    private static final String CONNECTION_MAX_DOWNTIME_MS_DOC =
+            "How long the task tolerates having no reachable broker at all before it fails, so a "
+            + "total outage becomes visible to the control plane (task state FAILED) instead of the "
+            + "task looking healthy while consuming nothing. While at least one assigned broker is "
+            + "reachable the task never fails, and any successful connection resets the clock. "
+            + "Failing loses no messages: everything unacknowledged is redelivered by the brokers. "
+            + "0 disables the limit (the task retries forever, silently).";
+
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
             // Broker
             .define(URL_CONFIG, Type.STRING, ConfigDef.NO_DEFAULT_VALUE, new ConfigDef.NonEmptyString(),
@@ -144,6 +153,9 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
             .define(CONNECTION_RETRY_BACKOFF_MAX_MS_CONFIG, Type.LONG, 60_000L, Range.atLeast(1000L),
                     Importance.LOW, CONNECTION_RETRY_BACKOFF_MAX_MS_DOC, GROUP_BROKER, 5, Width.SHORT,
                     "Max retry backoff (ms)")
+            .define(CONNECTION_MAX_DOWNTIME_MS_CONFIG, Type.LONG, 900_000L, Range.atLeast(0L),
+                    Importance.MEDIUM, CONNECTION_MAX_DOWNTIME_MS_DOC, GROUP_BROKER, 6, Width.SHORT,
+                    "Max total downtime (ms)")
             // Destination
             .define(DESTINATION_NAME_CONFIG, Type.STRING, ConfigDef.NO_DEFAULT_VALUE, new ConfigDef.NonEmptyString(),
                     Importance.HIGH, DESTINATION_NAME_DOC, GROUP_DESTINATION, 0, Width.LONG, "Destination name")
@@ -292,5 +304,10 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
 
     public long connectionRetryBackoffMaxMs() {
         return getLong(CONNECTION_RETRY_BACKOFF_MAX_MS_CONFIG);
+    }
+
+    /** Max tolerated total-outage duration before the task fails; 0 means never fail. */
+    public long connectionMaxDowntimeMs() {
+        return getLong(CONNECTION_MAX_DOWNTIME_MS_CONFIG);
     }
 }

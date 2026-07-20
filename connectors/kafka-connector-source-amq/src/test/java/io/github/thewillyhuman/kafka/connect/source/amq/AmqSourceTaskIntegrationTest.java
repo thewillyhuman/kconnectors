@@ -12,6 +12,7 @@ import org.apache.activemq.artemis.core.config.Configuration;
 import org.apache.activemq.artemis.core.config.impl.ConfigurationImpl;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.embedded.EmbeddedActiveMQ;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.header.Header;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.qpid.jms.JmsConnectionFactory;
@@ -31,6 +32,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -306,6 +308,98 @@ class AmqSourceTaskIntegrationTest {
             awaitMessageCount(task, primaryBroker, queue, 0);
         } finally {
             task.stop();
+        }
+    }
+
+    @Test
+    void taskFailsWhenAllBrokersAreDownForTooLong() throws Exception {
+        int deadPort = freePort();
+        AmqSourceTask task = startTask("itest.totaloutage", Map.of(
+                AmqSourceConnectorConfig.URL_CONFIG, "amqp://127.0.0.1:" + deadPort,
+                AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG, "300"));
+        try {
+            ConnectException failure = assertThrows(ConnectException.class, () -> {
+                long deadline = System.currentTimeMillis() + 10_000;
+                while (System.currentTimeMillis() < deadline) {
+                    task.poll();
+                }
+            }, "the task must fail once every broker has been down longer than the limit");
+            assertTrue(failure.getMessage().contains("127.0.0.1:" + deadPort),
+                    "the failure must name the unreachable brokers: " + failure.getMessage());
+            assertTrue(failure.getMessage().contains(
+                            AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG),
+                    "the failure must name the limit that fired: " + failure.getMessage());
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void aPartialOutageNeverFailsTheTask() throws Exception {
+        String queue = "itest.partialdowntime";
+        int deadPort = freePort();
+        sendTextMessages(primaryPort, queue, "payload-", 2);
+
+        // Downtime limit far below the polling time: the healthy broker must keep
+        // resetting the downtime clock, so the task never fails.
+        AmqSourceTask task = startTask(queue, Map.of(
+                AmqSourceConnectorConfig.URL_CONFIG,
+                "amqp://127.0.0.1:" + primaryPort + ",amqp://127.0.0.1:" + deadPort,
+                AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG, "200",
+                AmqSourceConnectorConfig.POLL_TIMEOUT_MS_CONFIG, "100"));
+        try {
+            List<SourceRecord> records = pollUntil(task, 2);
+            for (SourceRecord record : records) {
+                task.commitRecord(record, null);
+            }
+            long deadline = System.currentTimeMillis() + 1_000;
+            while (System.currentTimeMillis() < deadline) {
+                task.poll(); // must never throw while one broker is healthy
+            }
+            awaitMessageCount(task, primaryBroker, queue, 0);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void anOutageShorterThanTheLimitDoesNotFailTheTask() throws Exception {
+        String queue = "itest.shortoutage";
+        int port = freePort();
+        EmbeddedActiveMQ broker = startBroker("itest-restart", port);
+        try {
+            sendTextMessages(port, queue, "before-", 1);
+            AmqSourceTask task = startTask(queue, Map.of(
+                    AmqSourceConnectorConfig.URL_CONFIG, "amqp://127.0.0.1:" + port,
+                    AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG, "20000",
+                    AmqSourceConnectorConfig.CONNECTION_RETRY_BACKOFF_MS_CONFIG, "100",
+                    AmqSourceConnectorConfig.POLL_TIMEOUT_MS_CONFIG, "100"));
+            try {
+                for (SourceRecord record : pollUntil(task, 1)) {
+                    task.commitRecord(record, null);
+                }
+                awaitMessageCount(task, broker, queue, 0);
+
+                // Outage far shorter than the limit: polling must keep returning null.
+                broker.stop();
+                long outageEnd = System.currentTimeMillis() + 1_500;
+                while (System.currentTimeMillis() < outageEnd) {
+                    assertNull(task.poll(), "no records can arrive while the broker is down");
+                }
+
+                // The broker returns before the limit: the task must reconnect and resume.
+                broker = startBroker("itest-restart", port);
+                sendTextMessages(port, queue, "after-", 1);
+                List<SourceRecord> recovered = pollUntil(task, 1);
+                assertEquals("after-0",
+                        new String((byte[]) recovered.get(0).value(), StandardCharsets.UTF_8));
+                task.commitRecord(recovered.get(0), null);
+                awaitMessageCount(task, broker, queue, 0);
+            } finally {
+                task.stop();
+            }
+        } finally {
+            broker.stop();
         }
     }
 

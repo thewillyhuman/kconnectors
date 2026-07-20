@@ -34,6 +34,7 @@ class AmqSourceConnectorConfigTest {
         assertEquals(2048, config.maxUnackedMessages());
         assertEquals(128L * 1024 * 1024, config.maxUnackedBytes());
         assertEquals(1024, config.batchMaxSize());
+        assertEquals(900_000L, config.connectionMaxDowntimeMs());
         assertTrue(config.headersEnabled());
         assertNull(config.username());
         assertNull(config.password());
@@ -102,6 +103,17 @@ class AmqSourceConnectorConfigTest {
 
         Map<String, String> negative = minimalProps();
         negative.put(AmqSourceConnectorConfig.MAX_UNACKED_BYTES_CONFIG, "-1");
+        assertThrows(ConfigException.class, () -> new AmqSourceConnectorConfig(negative));
+    }
+
+    @Test
+    void connectionMaxDowntimeCanBeDisabledButNotNegative() {
+        Map<String, String> disabled = minimalProps();
+        disabled.put(AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG, "0");
+        assertEquals(0, new AmqSourceConnectorConfig(disabled).connectionMaxDowntimeMs());
+
+        Map<String, String> negative = minimalProps();
+        negative.put(AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG, "-1");
         assertThrows(ConfigException.class, () -> new AmqSourceConnectorConfig(negative));
     }
 
