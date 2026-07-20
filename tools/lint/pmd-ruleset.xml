@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="kconnectors"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+  <description>
+    Shared PMD ruleset for every connector in this repository. The lint gate is
+    blocking, so the selection focuses on bug-prone constructs (errorprone,
+    multithreading, sensible best practices) and excludes rules that flag
+    patterns Kafka Connect connectors use deliberately: long-lived JMS
+    connections, poll() returning null per the Connect API contract, catch-all
+    handlers in poll loops that must never kill the task.
+  </description>
+
+  <rule ref="category/java/bestpractices.xml">
+    <!-- Guarded logging is pointless with slf4j parameterized messages. -->
+    <exclude name="GuardLogStatement"/>
+    <!-- Test style, not correctness. -->
+    <exclude name="UnitTestContainsTooManyAsserts"/>
+    <exclude name="UnitTestAssertionsShouldIncludeMessage"/>
+    <exclude name="UnitTestShouldIncludeAssert"/>
+    <!-- Fires on test fakes that store the byte[] they are handed. -->
+    <exclude name="ArrayIsStoredDirectly"/>
+    <!-- ConcurrentHashMap etc. as declared types is deliberate where the
+         concrete concurrency semantics are the point. -->
+    <exclude name="LooseCoupling"/>
+    <exclude name="AvoidReassigningLoopVariables"/>
+    <!-- Rethrowing as ConfigException without the cause is deliberate where
+         the cause carries no extra information for the operator. -->
+    <exclude name="PreserveStackTrace"/>
+  </rule>
+
+  <rule ref="category/java/errorprone.xml">
+    <!-- Null assignments are used deliberately to release references. -->
+    <exclude name="NullAssignment"/>
+    <!-- Kafka Connect's SourceTask.poll() contract allows returning null. -->
+    <exclude name="ReturnEmptyCollectionRatherThanNull"/>
+    <!-- `while ((x = poll()) != null)` is the canonical drain-loop idiom. -->
+    <exclude name="AssignmentInOperand"/>
+    <!-- Catch-all handlers in poll loops and JMX helpers are deliberate: a
+         connector task must degrade, not die, on unexpected exceptions. -->
+    <exclude name="AvoidCatchingGenericException"/>
+    <exclude name="AvoidLiteralsInIfCondition"/>
+    <exclude name="AvoidFieldNameMatchingMethodName"/>
+    <exclude name="AvoidFieldNameMatchingTypeName"/>
+    <exclude name="AvoidDuplicateLiterals"/>
+    <!-- Misfires on JUnit5 helper/fake classes. -->
+    <exclude name="TestClassWithoutTestCases"/>
+    <!-- Long-lived connections owned by a lifecycle (start/stop), not by a
+         try-with-resources block. -->
+    <exclude name="CloseResource"/>
+  </rule>
+
+  <rule ref="category/java/multithreading.xml">
+    <!-- Connectors explicitly manage their own threads and executors. -->
+    <exclude name="DoNotUseThreads"/>
+    <!-- volatile stop-flags are the standard Connect task pattern. -->
+    <exclude name="AvoidUsingVolatile"/>
+    <!-- Method-level synchronized is fine at this size; block level adds
+         nesting without changing the lock. -->
+    <exclude name="AvoidSynchronizedAtMethodLevel"/>
+    <exclude name="AvoidSynchronizedStatement"/>
+    <!-- Fires on any HashMap near threads, including single-threaded locals. -->
+    <exclude name="UseConcurrentHashMap"/>
+  </rule>
+
+  <rule ref="category/java/performance.xml">
+    <!-- Object creation in poll loops is unavoidable in a message pipeline. -->
+    <exclude name="AvoidInstantiatingObjectsInLoops"/>
+  </rule>
+
+  <rule ref="category/java/design.xml/SimplifyBooleanExpressions"/>
+  <rule ref="category/java/design.xml/SimplifyBooleanReturns"/>
+</ruleset>
