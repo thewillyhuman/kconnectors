@@ -4,4 +4,4 @@
 # Releasing = bump this, merge, then tag the merge commit:
 #   git tag kafka-connector-source-amq-v<VERSION> && git push origin <tag>
 # The release workflow refuses tags that do not match this value.
-VERSION = "1.0.0"
+VERSION = "1.1.0"
