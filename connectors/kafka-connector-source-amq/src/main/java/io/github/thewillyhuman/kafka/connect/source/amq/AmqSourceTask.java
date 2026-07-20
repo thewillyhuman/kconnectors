@@ -74,6 +74,10 @@ public class AmqSourceTask extends SourceTask {
     private volatile boolean running;
     private int sweepOffset;
 
+    // Monotonic timestamp of the last poll that had at least one broker reachable (immune to
+    // wall-clock steps); the connection.max.downtime.ms failure is measured against it.
+    private long lastBrokerContactNanos;
+
     @Override
     public String version() {
         return Version.get();
@@ -101,6 +105,7 @@ public class AmqSourceTask extends SourceTask {
         metrics = new TaskMetrics(ackRegistry::inFlightCount, ackRegistry::inFlightBytes,
                 ackRegistry::pendingAcknowledgementCount, clients::size, this::connectedClientCount);
         metrics.register(connectorName, taskId);
+        lastBrokerContactNanos = System.nanoTime();
         running = true;
 
         log.info("Starting AMQ source task {}/{} version {}: brokers={}, destination={} ({}), "
@@ -129,9 +134,11 @@ public class AmqSourceTask extends SourceTask {
         }
         List<JmsClient> connected = connectedClients();
         if (connected.isEmpty()) {
+            failIfDownForTooLong();
             Thread.sleep(DISCONNECTED_POLL_PAUSE_MS);
             return null;
         }
+        lastBrokerContactNanos = System.nanoTime();
 
         int capacity = config.maxUnackedMessages() - ackRegistry.inFlightCount();
         if (capacity <= 0 || byteLimitReached()) {
@@ -287,6 +294,33 @@ public class AmqSourceTask extends SourceTask {
         if (metrics != null) {
             metrics.unregister();
         }
+    }
+
+    /**
+     * Fails the task when no assigned broker has been reachable for longer than
+     * {@code connection.max.downtime.ms}. A partial outage never fails the task (the healthy
+     * brokers keep resetting the clock), and failing loses no messages: everything
+     * unacknowledged is redelivered by the brokers. The point is to surface a total,
+     * sustained outage to the control plane (task state FAILED) instead of the task looking
+     * healthy while consuming nothing.
+     */
+    private void failIfDownForTooLong() {
+        long limitMs = config.connectionMaxDowntimeMs();
+        if (limitMs <= 0) {
+            return;
+        }
+        long downForMs = (System.nanoTime() - lastBrokerContactNanos) / 1_000_000;
+        if (downForMs < limitMs) {
+            return;
+        }
+        List<String> brokers = new ArrayList<>(clients.size());
+        for (ManagedClient managed : clients) {
+            brokers.add(managed.client.label());
+        }
+        throw new ConnectException("No broker reachable for " + downForMs + " ms (limit "
+                + limitMs + " ms, " + AmqSourceConnectorConfig.CONNECTION_MAX_DOWNTIME_MS_CONFIG
+                + "): " + String.join(", ", brokers) + ". Failing the task so the outage is "
+                + "visible; unacknowledged messages will be redelivered by the brokers.");
     }
 
     /** Sends pending acknowledgements to the brokers; must run on the task thread. */

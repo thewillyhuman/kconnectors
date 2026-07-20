@@ -169,6 +169,7 @@ tasks are competing consumers. For **topics**, a durable subscription
 | `record.headers.enabled` | `true` | Copy JMS metadata/properties to record headers (`jms.message.id`, `jms.timestamp`, `jms.redelivered`, `jms.property.<name>`, ...). |
 | `connection.retry.backoff.ms` | `1000` | Initial reconnect backoff (doubles up to the max). |
 | `connection.retry.backoff.max.ms` | `60000` | Max reconnect backoff. |
+| `connection.max.downtime.ms` | `900000` (15 min) | If **no** broker is reachable for this long, the task fails so the outage is visible to the control plane (task state FAILED) instead of looking healthy while consuming nothing. A partial outage never fails the task, reconnection resets the clock, and nothing is lost (unacknowledged messages are redelivered). `0` disables. |
 
 TLS and advanced transport settings (truststores, SASL mechanisms, idle timeout, prefetch)
 are configured through the standard Qpid JMS URI options on `amq.url`, so existing
