@@ -189,6 +189,77 @@ class AmqSourceTaskIntegrationTest {
     }
 
     @Test
+    void consumptionPausesWhenUnackedPayloadBytesExceedTheLimit() throws Exception {
+        String queue = "itest.bytebackpressure";
+        // ~1 KB payloads with a 1.5 KB budget: the second message crosses the limit.
+        String payloadPrefix = "x".repeat(1000) + "-";
+        sendTextMessages(primaryPort, queue, payloadPrefix, 5);
+
+        AmqSourceTask task = startTask(queue, Map.of(
+                AmqSourceConnectorConfig.MAX_UNACKED_BYTES_CONFIG, "1500",
+                AmqSourceConnectorConfig.POLL_TIMEOUT_MS_CONFIG, "100"));
+        try {
+            List<SourceRecord> firstBatch = pollUntil(task, 2);
+            assertNull(task.poll(), "consumption must pause at max.unacked.bytes");
+            assertEquals(5, messageCount(primaryBroker, queue));
+
+            // Confirmations release the byte budget and the rest flows through the window.
+            Set<String> payloads = new HashSet<>();
+            for (SourceRecord record : firstBatch) {
+                payloads.add(new String((byte[]) record.value(), StandardCharsets.UTF_8));
+                task.commitRecord(record, null);
+            }
+            long deadline = System.currentTimeMillis() + 20_000;
+            while (payloads.size() < 5 && System.currentTimeMillis() < deadline) {
+                List<SourceRecord> batch = task.poll();
+                if (batch == null) {
+                    continue;
+                }
+                for (SourceRecord record : batch) {
+                    payloads.add(new String((byte[]) record.value(), StandardCharsets.UTF_8));
+                    task.commitRecord(record, null);
+                }
+            }
+            assertEquals(5, payloads.size(), "all messages must eventually be consumed");
+            awaitMessageCount(task, primaryBroker, queue, 0);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void aMessageLargerThanTheByteLimitStillFlows() throws Exception {
+        String queue = "itest.oversized";
+        // Every payload is far larger than the byte limit: each poll must still admit
+        // exactly one message instead of deadlocking.
+        String payloadPrefix = "y".repeat(2000) + "-";
+        sendTextMessages(primaryPort, queue, payloadPrefix, 3);
+
+        AmqSourceTask task = startTask(queue, Map.of(
+                AmqSourceConnectorConfig.MAX_UNACKED_BYTES_CONFIG, "100",
+                AmqSourceConnectorConfig.POLL_TIMEOUT_MS_CONFIG, "100"));
+        try {
+            Set<String> payloads = new HashSet<>();
+            long deadline = System.currentTimeMillis() + 20_000;
+            while (payloads.size() < 3 && System.currentTimeMillis() < deadline) {
+                List<SourceRecord> batch = task.poll();
+                if (batch == null) {
+                    continue;
+                }
+                assertEquals(1, batch.size(), "an oversized message must be admitted alone");
+                for (SourceRecord record : batch) {
+                    payloads.add(new String((byte[]) record.value(), StandardCharsets.UTF_8));
+                    task.commitRecord(record, null);
+                }
+            }
+            assertEquals(3, payloads.size(), "oversized messages must keep flowing one at a time");
+            awaitMessageCount(task, primaryBroker, queue, 0);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
     void oneTaskConsumesFromSeveralBrokersConcurrently() throws Exception {
         String queue = "itest.multibroker";
         sendTextMessages(primaryPort, queue, "primary-", 3);

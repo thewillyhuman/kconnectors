@@ -36,6 +36,9 @@ public interface TaskMetricsMBean {
     /** Messages handed to Kafka Connect and not yet confirmed by Kafka. */
     int getInFlightMessages();
 
+    /** Cumulative payload bytes of the in-flight messages (headroom vs max.unacked.bytes). */
+    long getInFlightBytes();
+
     /** Messages confirmed by Kafka whose broker acknowledgement is not yet sent. */
     int getPendingAcknowledgements();
 

@@ -32,6 +32,7 @@ class AmqSourceConnectorConfigTest {
         assertEquals(AmqSourceConnectorConfig.KeySource.NONE, config.keySource());
         assertEquals(AmqSourceConnectorConfig.ConversionErrorPolicy.FAIL, config.conversionErrorPolicy());
         assertEquals(2048, config.maxUnackedMessages());
+        assertEquals(128L * 1024 * 1024, config.maxUnackedBytes());
         assertEquals(1024, config.batchMaxSize());
         assertTrue(config.headersEnabled());
         assertNull(config.username());
@@ -91,6 +92,17 @@ class AmqSourceConnectorConfigTest {
         valid.put(AmqSourceConnectorConfig.SUBSCRIPTION_NAME_CONFIG, "sample-sub");
         valid.put(AmqSourceConnectorConfig.CLIENT_ID_CONFIG, "sample-connector");
         assertEquals("sample-sub", new AmqSourceConnectorConfig(valid).subscriptionName());
+    }
+
+    @Test
+    void maxUnackedBytesCanBeDisabledButNotNegative() {
+        Map<String, String> disabled = minimalProps();
+        disabled.put(AmqSourceConnectorConfig.MAX_UNACKED_BYTES_CONFIG, "0");
+        assertEquals(0, new AmqSourceConnectorConfig(disabled).maxUnackedBytes());
+
+        Map<String, String> negative = minimalProps();
+        negative.put(AmqSourceConnectorConfig.MAX_UNACKED_BYTES_CONFIG, "-1");
+        assertThrows(ConfigException.class, () -> new AmqSourceConnectorConfig(negative));
     }
 
     @Test
