@@ -1,0 +1,38 @@
+"""kconnectors: monorepo of Kafka Connect connectors.
+
+Each connector lives under connectors/kafka-connector-[source|sink]-<TYPE>
+and is built, tested and released independently.
+"""
+
+module(name = "kconnectors")
+
+bazel_dep(name = "rules_java", version = "8.16.1")
+bazel_dep(name = "rules_jvm_external", version = "6.10")
+bazel_dep(name = "contrib_rules_jvm", version = "0.33.0")
+bazel_dep(name = "rules_pkg", version = "1.2.0")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+
+# All Maven dependencies of all connectors are resolved together and pinned in
+# maven_install.json (repin with: REPIN=1 bazel run @unpinned_maven//:pin).
+# A single universe keeps versions consistent across connectors; per-connector
+# isolation happens at the target level, not the resolution level.
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    name = "maven",
+    artifacts = [
+        # kafka-connector-source-amq
+        "org.apache.kafka:connect-api:3.9.1",
+        "org.slf4j:slf4j-api:2.0.16",
+        "org.apache.qpid:qpid-jms-client:2.7.0",
+        # kafka-connector-source-amq (tests)
+        "org.junit.jupiter:junit-jupiter:5.11.4",
+        "org.junit.platform:junit-platform-launcher:1.11.4",
+        "org.junit.platform:junit-platform-reporting:1.11.4",
+        "org.apache.activemq:artemis-server:2.42.0",
+        "org.apache.activemq:artemis-amqp-protocol:2.42.0",
+        "org.slf4j:slf4j-simple:2.0.16",
+    ],
+    lock_file = "//:maven_install.json",
+    repositories = ["https://repo1.maven.org/maven2"],
+)
+use_repo(maven, "maven", "unpinned_maven")

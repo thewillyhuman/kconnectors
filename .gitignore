@@ -1,0 +1,7 @@
+/bazel-*
+.bazelrc.local
+.ijwb/
+.idea/
+*.iml
+.vscode/
+.DS_Store

@@ -1,0 +1,18 @@
+# Connectors are compiled for the JVM shipped with the Kafka Connect runtime
+# images we target, not for whatever JDK happens to be installed locally.
+build --java_language_version=17
+build --java_runtime_version=remotejdk_17
+build --tool_java_language_version=17
+build --tool_java_runtime_version=remotejdk_17
+
+test --test_output=errors
+
+# CI profile (GitHub Actions), opt in with --config=ci. The caches live under
+# ~/.cache so the workflow can persist them with actions/cache between runs.
+common:ci --curses=no --color=yes
+build:ci --disk_cache=~/.cache/bazel-disk-cache
+build:ci --repository_cache=~/.cache/bazel-repo-cache
+build:ci --verbose_failures
+
+# Personal, per-machine overrides stay out of version control.
+try-import %workspace%/.bazelrc.local

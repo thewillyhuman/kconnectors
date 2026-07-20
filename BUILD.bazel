@@ -1,0 +1,2 @@
+# Root package: intentionally empty, all buildable targets live under
+# connectors/<name>/.
