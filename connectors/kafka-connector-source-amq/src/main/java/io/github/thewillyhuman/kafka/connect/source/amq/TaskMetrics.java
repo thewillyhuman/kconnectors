@@ -11,6 +11,7 @@ import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * Per-task counters and gauges, exposed over JMX. Metric failures are never allowed to
@@ -33,15 +34,18 @@ final class TaskMetrics implements TaskMetricsMBean {
     private volatile long lastAcknowledgeEpochMillis;
 
     private final IntSupplier inFlightMessages;
+    private final LongSupplier inFlightBytes;
     private final IntSupplier pendingAcknowledgements;
     private final IntSupplier brokersConfigured;
     private final IntSupplier brokersConnected;
 
     private volatile ObjectName objectName;
 
-    TaskMetrics(IntSupplier inFlightMessages, IntSupplier pendingAcknowledgements,
+    TaskMetrics(IntSupplier inFlightMessages, LongSupplier inFlightBytes,
+                IntSupplier pendingAcknowledgements,
                 IntSupplier brokersConfigured, IntSupplier brokersConnected) {
         this.inFlightMessages = inFlightMessages;
+        this.inFlightBytes = inFlightBytes;
         this.pendingAcknowledgements = pendingAcknowledgements;
         this.brokersConfigured = brokersConfigured;
         this.brokersConnected = brokersConnected;
@@ -151,6 +155,11 @@ final class TaskMetrics implements TaskMetricsMBean {
     @Override
     public int getInFlightMessages() {
         return inFlightMessages.getAsInt();
+    }
+
+    @Override
+    public long getInFlightBytes() {
+        return inFlightBytes.getAsLong();
     }
 
     @Override

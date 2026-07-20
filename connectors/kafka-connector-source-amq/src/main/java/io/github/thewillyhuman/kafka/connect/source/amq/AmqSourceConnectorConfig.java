@@ -90,6 +90,14 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
             + "(backpressure). This bounds both memory usage and the number of possible duplicates "
             + "after a crash.";
 
+    public static final String MAX_UNACKED_BYTES_CONFIG = "max.unacked.bytes";
+    private static final String MAX_UNACKED_BYTES_DOC =
+            "Maximum cumulative payload size, in bytes, of the messages consumed from the broker "
+            + "but not yet confirmed by Kafka. Complements " + MAX_UNACKED_MESSAGES_CONFIG + ": the "
+            + "count bounds the duplicate window while this bounds heap usage when messages are "
+            + "large. At least one message is always admitted, so a single message larger than the "
+            + "limit still flows. 0 disables the byte limit.";
+
     public static final String VALUE_FORMAT_CONFIG = "record.value.format";
     private static final String VALUE_FORMAT_DOC =
             "Format of the record value handed to the transformation chain: 'bytes' (default; both "
@@ -153,13 +161,16 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
             .define(MAX_UNACKED_MESSAGES_CONFIG, Type.INT, 2048, Range.atLeast(1),
                     Importance.MEDIUM, MAX_UNACKED_MESSAGES_DOC, GROUP_DELIVERY, 0, Width.SHORT,
                     "Max unacknowledged messages")
+            .define(MAX_UNACKED_BYTES_CONFIG, Type.LONG, 128L * 1024 * 1024, Range.atLeast(0L),
+                    Importance.MEDIUM, MAX_UNACKED_BYTES_DOC, GROUP_DELIVERY, 1, Width.SHORT,
+                    "Max unacknowledged bytes")
             .define(BATCH_MAX_SIZE_CONFIG, Type.INT, 1024, Range.between(1, 100_000),
-                    Importance.MEDIUM, BATCH_MAX_SIZE_DOC, GROUP_DELIVERY, 1, Width.SHORT, "Max batch size")
+                    Importance.MEDIUM, BATCH_MAX_SIZE_DOC, GROUP_DELIVERY, 2, Width.SHORT, "Max batch size")
             .define(POLL_TIMEOUT_MS_CONFIG, Type.LONG, 1000L, Range.between(10L, 60_000L),
-                    Importance.LOW, POLL_TIMEOUT_MS_DOC, GROUP_DELIVERY, 2, Width.SHORT, "Poll timeout (ms)")
+                    Importance.LOW, POLL_TIMEOUT_MS_DOC, GROUP_DELIVERY, 3, Width.SHORT, "Poll timeout (ms)")
             .define(CONVERSION_ERROR_POLICY_CONFIG, Type.STRING, "fail",
                     ConfigDef.CaseInsensitiveValidString.in("fail", "discard"),
-                    Importance.MEDIUM, CONVERSION_ERROR_POLICY_DOC, GROUP_DELIVERY, 3, Width.SHORT,
+                    Importance.MEDIUM, CONVERSION_ERROR_POLICY_DOC, GROUP_DELIVERY, 4, Width.SHORT,
                     "Conversion error policy")
             // Records
             .define(VALUE_FORMAT_CONFIG, Type.STRING, "bytes",
@@ -252,6 +263,11 @@ public final class AmqSourceConnectorConfig extends AbstractConfig {
 
     public int maxUnackedMessages() {
         return getInt(MAX_UNACKED_MESSAGES_CONFIG);
+    }
+
+    /** Byte limit for unconfirmed message payloads; 0 means no byte limit. */
+    public long maxUnackedBytes() {
+        return getLong(MAX_UNACKED_BYTES_CONFIG);
     }
 
     public ValueFormat valueFormat() {

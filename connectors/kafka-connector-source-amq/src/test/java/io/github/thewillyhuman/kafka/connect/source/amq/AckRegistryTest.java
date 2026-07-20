@@ -33,9 +33,9 @@ class AckRegistryTest {
         FakeMessage first = new FakeTextMessage("a");
         FakeMessage second = new FakeTextMessage("b");
         long firstId = registry.nextAcknowledgeId();
-        registry.track(firstId, first, clientA);
+        registry.track(firstId, first, clientA, 1);
         long secondId = registry.nextAcknowledgeId();
-        registry.track(secondId, second, clientA);
+        registry.track(secondId, second, clientA, 1);
         assertEquals(2, registry.inFlightCount());
         assertEquals(0, registry.pendingAcknowledgementCount());
 
@@ -50,7 +50,7 @@ class AckRegistryTest {
     void completingAnUntrackedMessageIsReportedAsStale() {
         assertFalse(registry.complete(42L));
         long id = registry.nextAcknowledgeId();
-        registry.track(id, new FakeTextMessage("a"), clientA);
+        registry.track(id, new FakeTextMessage("a"), clientA, 1);
         assertTrue(registry.complete(id));
         assertFalse(registry.complete(id), "double completion must not enqueue a second acknowledgement");
         assertEquals(1, registry.pendingAcknowledgementCount());
@@ -59,9 +59,9 @@ class AckRegistryTest {
     @Test
     void clearOnlyDropsTheInFlightMessagesOfTheGivenClient() {
         long onA = registry.nextAcknowledgeId();
-        registry.track(onA, new FakeTextMessage("a"), clientA);
+        registry.track(onA, new FakeTextMessage("a"), clientA, 1);
         long onB = registry.nextAcknowledgeId();
-        registry.track(onB, new FakeTextMessage("b"), clientB);
+        registry.track(onB, new FakeTextMessage("b"), clientB, 1);
 
         assertEquals(1, registry.clear(clientA));
         assertEquals(1, registry.inFlightCount());
@@ -72,7 +72,7 @@ class AckRegistryTest {
     @Test
     void messagesFromAnOldConnectionEpochAreStale() {
         long id = registry.nextAcknowledgeId();
-        registry.track(id, new FakeTextMessage("a"), clientA);
+        registry.track(id, new FakeTextMessage("a"), clientA, 1);
         assertTrue(registry.complete(id));
         AckRegistry.Tracked tracked = registry.nextPendingAcknowledgement();
         assertFalse(tracked.isStale(), "a tracked message on the live connection epoch is acknowledgeable");
@@ -82,9 +82,28 @@ class AckRegistryTest {
     }
 
     @Test
+    void byteAccountingFollowsTheMessageLifecycle() {
+        long onA = registry.nextAcknowledgeId();
+        registry.track(onA, new FakeTextMessage("a"), clientA, 100);
+        long onB = registry.nextAcknowledgeId();
+        registry.track(onB, new FakeTextMessage("b"), clientB, 40);
+        assertEquals(140, registry.inFlightBytes());
+
+        // Confirmation releases the bytes even though the acknowledgement is still pending.
+        assertTrue(registry.complete(onA));
+        assertEquals(40, registry.inFlightBytes());
+
+        // A connection reset releases the bytes of the dropped messages exactly once.
+        assertEquals(1, registry.clear(clientB));
+        assertEquals(0, registry.inFlightBytes());
+        assertFalse(registry.complete(onB), "a cleared message must not be completed");
+        assertEquals(0, registry.inFlightBytes(), "a late confirmation must not subtract twice");
+    }
+
+    @Test
     void messagesFromADirtyConnectionAreStale() {
         long id = registry.nextAcknowledgeId();
-        registry.track(id, new FakeTextMessage("a"), clientA);
+        registry.track(id, new FakeTextMessage("a"), clientA, 1);
         registry.complete(id);
         AckRegistry.Tracked tracked = registry.nextPendingAcknowledgement();
         clientA.markDirty();

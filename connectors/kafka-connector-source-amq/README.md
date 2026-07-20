@@ -160,6 +160,7 @@ tasks are competing consumers. For **topics**, a durable subscription
 | `amq.subscription.name` | `null` | Durable topic subscription name (single task only). |
 | `kafka.topic` | — (required) | Target Kafka topic. |
 | `max.unacked.messages` | `2048` | Backpressure limit: max messages consumed but not yet confirmed by Kafka (replaces `camel.source.maxNotCommittedRecords`). |
+| `max.unacked.bytes` | `134217728` (128 MiB) | Backpressure limit on the cumulative payload size of unconfirmed messages: bounds heap usage when messages are large. At least one message is always admitted, so a single message larger than the limit still flows. `0` disables the byte limit. |
 | `batch.max.size` | `1024` | Max records per poll. |
 | `poll.timeout.ms` | `1000` | Wait for the first message of a batch. |
 | `conversion.error.policy` | `fail` | `fail` (task fails, message stays on the broker) or `discard` (log + count + acknowledge). |

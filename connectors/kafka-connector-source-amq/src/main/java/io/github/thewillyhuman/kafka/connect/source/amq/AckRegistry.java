@@ -5,7 +5,6 @@ package io.github.thewillyhuman.kafka.connect.source.amq;
 
 import jakarta.jms.Message;
 
-import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -33,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class AckRegistry {
 
     /** A message together with the connection it was received on. */
-    record Tracked(Message message, JmsClient client, long epoch) {
+    record Tracked(Message message, JmsClient client, long epoch, int payloadBytes) {
 
         /** True when the connection the message arrived on is no longer the live one. */
         boolean isStale() {
@@ -42,6 +41,7 @@ final class AckRegistry {
     }
 
     private final AtomicLong sequence = new AtomicLong();
+    private final AtomicLong inFlightBytes = new AtomicLong();
     private final ConcurrentHashMap<Long, Tracked> inFlight = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<Tracked> pendingAcknowledgements = new ConcurrentLinkedQueue<>();
 
@@ -51,8 +51,9 @@ final class AckRegistry {
     }
 
     /** Starts tracking a message that is about to be handed to Kafka Connect. */
-    void track(long acknowledgeId, Message message, JmsClient client) {
-        inFlight.put(acknowledgeId, new Tracked(message, client, client.epoch()));
+    void track(long acknowledgeId, Message message, JmsClient client, int payloadBytes) {
+        inFlight.put(acknowledgeId, new Tracked(message, client, client.epoch(), payloadBytes));
+        inFlightBytes.addAndGet(payloadBytes);
     }
 
     /**
@@ -65,6 +66,7 @@ final class AckRegistry {
         if (tracked == null) {
             return false;
         }
+        inFlightBytes.addAndGet(-tracked.payloadBytes());
         pendingAcknowledgements.add(tracked);
         return true;
     }
@@ -76,6 +78,11 @@ final class AckRegistry {
 
     int inFlightCount() {
         return inFlight.size();
+    }
+
+    /** Cumulative payload bytes of the in-flight messages (max.unacked.bytes accounting). */
+    long inFlightBytes() {
+        return inFlightBytes.get();
     }
 
     int pendingAcknowledgementCount() {
@@ -92,10 +99,11 @@ final class AckRegistry {
      */
     int clear(JmsClient client) {
         int dropped = 0;
-        Iterator<Map.Entry<Long, Tracked>> entries = inFlight.entrySet().iterator();
-        while (entries.hasNext()) {
-            if (entries.next().getValue().client() == client) {
-                entries.remove();
+        // Conditional remove: a concurrent complete() may win the race for an entry, and
+        // its bytes must be subtracted exactly once.
+        for (Map.Entry<Long, Tracked> entry : inFlight.entrySet()) {
+            if (entry.getValue().client() == client && inFlight.remove(entry.getKey(), entry.getValue())) {
+                inFlightBytes.addAndGet(-entry.getValue().payloadBytes());
                 dropped++;
             }
         }

@@ -98,8 +98,8 @@ public class AmqSourceTask extends SourceTask {
         for (String url : brokerUrls) {
             clients.add(new ManagedClient(new JmsClient(config, url), config.connectionRetryBackoffMs()));
         }
-        metrics = new TaskMetrics(ackRegistry::inFlightCount, ackRegistry::pendingAcknowledgementCount,
-                clients::size, this::connectedClientCount);
+        metrics = new TaskMetrics(ackRegistry::inFlightCount, ackRegistry::inFlightBytes,
+                ackRegistry::pendingAcknowledgementCount, clients::size, this::connectedClientCount);
         metrics.register(connectorName, taskId);
         running = true;
 
@@ -134,9 +134,11 @@ public class AmqSourceTask extends SourceTask {
         }
 
         int capacity = config.maxUnackedMessages() - ackRegistry.inFlightCount();
-        if (capacity <= 0) {
-            log.debug("Backpressure: {} messages awaiting Kafka confirmation (max {}), pausing consumption",
-                    ackRegistry.inFlightCount(), config.maxUnackedMessages());
+        if (capacity <= 0 || byteLimitReached()) {
+            log.debug("Backpressure: {} messages / {} payload bytes awaiting Kafka confirmation "
+                            + "(max {} messages / {} bytes), pausing consumption",
+                    ackRegistry.inFlightCount(), ackRegistry.inFlightBytes(),
+                    config.maxUnackedMessages(), config.maxUnackedBytes());
             Thread.sleep(BACKPRESSURE_PAUSE_MS);
             drainPendingAcknowledgements();
             return null;
@@ -149,7 +151,8 @@ public class AmqSourceTask extends SourceTask {
         // First a non-blocking sweep over all brokers (drains what the clients prefetched),
         // then, if nothing was buffered, wait for a message splitting the poll timeout across
         // brokers. The sweep starting point rotates so no broker is systematically favoured.
-        for (int i = 0; i < connected.size() && records.size() < batchLimit && running; i++) {
+        for (int i = 0; i < connected.size() && records.size() < batchLimit && !byteLimitReached()
+                && running; i++) {
             receiveFrom(connected.get(Math.floorMod(start + i, connected.size())), records, batchLimit, 0);
         }
         if (records.isEmpty() && running) {
@@ -173,7 +176,7 @@ public class AmqSourceTask extends SourceTask {
             Message message = waitMs > 0 ? client.receive(waitMs) : client.receiveNoWait();
             while (message != null && running) {
                 handleMessage(client, message, records);
-                if (records.size() >= batchLimit) {
+                if (records.size() >= batchLimit || byteLimitReached()) {
                     return;
                 }
                 message = client.receiveNoWait();
@@ -183,6 +186,16 @@ public class AmqSourceTask extends SourceTask {
                     client.label(), e.toString());
             client.markDirty();
         }
+    }
+
+    /**
+     * True when the unconfirmed payload bytes are at or above {@code max.unacked.bytes}.
+     * Checked after admitting each message (never before the first), so a single message
+     * larger than the limit still flows instead of deadlocking the task.
+     */
+    private boolean byteLimitReached() {
+        long limit = config.maxUnackedBytes();
+        return limit > 0 && ackRegistry.inFlightBytes() >= limit;
     }
 
     private void handleMessage(JmsClient client, Message message, List<SourceRecord> records) throws JMSException {
@@ -208,8 +221,22 @@ public class AmqSourceTask extends SourceTask {
                     + " from '" + config.destinationName() + "' on " + client.label()
                     + "; failing the task so the message is not lost (conversion.error.policy=fail)", e);
         }
-        ackRegistry.track(acknowledgeId, message, client);
+        ackRegistry.track(acknowledgeId, message, client, payloadSizeBytes(record.value()));
         records.add(record);
+    }
+
+    /**
+     * Approximate payload size used for the {@code max.unacked.bytes} accounting: exact for
+     * byte-array values, character count for strings (close enough for a heap bound).
+     */
+    private static int payloadSizeBytes(Object value) {
+        if (value instanceof byte[] bytes) {
+            return bytes.length;
+        }
+        if (value instanceof String string) {
+            return string.length();
+        }
+        return 0;
     }
 
     /**
@@ -232,10 +259,12 @@ public class AmqSourceTask extends SourceTask {
     public void commit() {
         // Invoked periodically by the framework (offset flush): a good heartbeat for operators.
         if (metrics != null) {
-            log.info("Status: received={}, acknowledged={}, inFlight={}, pendingAcks={}, redelivered={}, "
-                            + "discarded={}, staleAcks={}, connectionResets={}, connectedBrokers={}/{}",
+            log.info("Status: received={}, acknowledged={}, inFlight={}, inFlightBytes={}, "
+                            + "pendingAcks={}, redelivered={}, discarded={}, staleAcks={}, "
+                            + "connectionResets={}, connectedBrokers={}/{}",
                     metrics.getMessagesReceived(), metrics.getMessagesAcknowledged(),
-                    metrics.getInFlightMessages(), metrics.getPendingAcknowledgements(),
+                    metrics.getInFlightMessages(), metrics.getInFlightBytes(),
+                    metrics.getPendingAcknowledgements(),
                     metrics.getRedeliveredMessagesReceived(), metrics.getMessagesDiscarded(),
                     metrics.getStaleAcknowledgements(), metrics.getConnectionResets(),
                     metrics.getBrokersConnected(), metrics.getBrokersConfigured());
